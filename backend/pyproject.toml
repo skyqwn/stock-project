@@ -12,6 +12,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "anyio>=4.13.0",
     "pytest>=9.0.3",
     "respx>=0.23.1",
 ]
+
+[tool.pytest.ini_options]
+anyio_mode = "auto"
