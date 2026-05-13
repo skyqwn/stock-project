@@ -32,11 +32,12 @@ export default function Home() {
           value={code}
           onChange={(e) => setCode(e.target.value)}
           placeholder="종목코드 (예: 005930)"
+          aria-label="종목코드"
           className="flex-1 rounded border px-3 py-2"
         />
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || !code.trim()}
           className="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
         >
           {loading ? "조회 중..." : "조회"}
