@@ -1,0 +1,17 @@
+[project]
+name = "kis-backend"
+version = "0.1.0"
+description = "KIS stock quote scaffold backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.136.1",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.14.1",
+    "uvicorn[standard]>=0.46.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "respx>=0.23.1",
+]
