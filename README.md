@@ -23,10 +23,6 @@ pnpm dev
 ```
 http://localhost:3000
 
-### KIS 키 설정
-`backend/.env.example` 를 `backend/.env` 로 복사하고 KIS Developers 포털
-(https://apiportal.koreainvestment.com)에서 모의투자 신청 + 앱 등록 후 받은
-APP_KEY / APP_SECRET 를 채운다. 키가 없어도 서버는 뜨며, 시세 조회 시 502 를 반환한다.
 
 ### 백엔드 테스트
 ```powershell
