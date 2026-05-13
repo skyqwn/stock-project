@@ -19,9 +19,11 @@
 
 ## 무엇을 만드나 (전체 그림)
 
-로그인한 사용자가 종목 페이지(예: 삼성전자)를 열면 옆에 챗 패널. 그 종목에 대해 자연어로
-물어보면 **LangGraph 에이전트**가 도구를 호출해 실시간 KIS 데이터를 가져오고 한국어로
-설명·분석해준다. 나중 단계에서 챗에서 모의 매수/매도, 뉴스 검색, 다종목 대시보드.
+로그인한 사용자에게 **모든 페이지 우측 하단에 플로팅 챗 버튼**(`position: fixed`)이 떠 있고,
+누르면 챗 패널이 슬라이드로 열린다(인터콤/채널톡 형태). 자연어로 종목에 대해 물어보면
+**LangGraph 에이전트**가 도구를 호출해 실시간 KIS 데이터를 가져오고 한국어로 설명·분석해준다.
+챗 위젯은 **현재 페이지를 컨텍스트로 주입**한다 — 종목 페이지(`/stocks/005930`)에 있으면 그
+종목을 인지하고, 일반 페이지면 일반 챗. 나중 단계에서 챗에서 모의 매수/매도, 뉴스 검색, 다종목 대시보드.
 
 "LangGraph로 만들 가치"의 핵심 = 단순히 프롬프트에 데이터 때려넣고 LLM 한 번 호출이 아니라,
 **LLM이 어떤 도구를 언제 호출할지 판단하고 여러 단계로 추론하는 에이전트**여야 한다. 그리고
@@ -35,6 +37,7 @@
 - 다중 LLM 프로바이더 추상화 (OpenAI로 고정)
 - 모바일 앱
 - 결제 / 구독
+- **장기/대화 간 사용자 메모리 (mem0 / langmem / LangGraph Store)** — "이 사용자는 반도체 선호, 보수적 추천 선호" 같은 사실을 여러 대화에 걸쳐 기억. 멋진 추가지만 범위 늘어남. 단계 4 후보로 보류. (이번 범위의 "메모리"는 (a) 대화 내 기억뿐 — 아래 단계 3 참고)
 
 ## 기술 스택 (확정)
 
@@ -46,6 +49,7 @@
 | 토큰 스토어 | Redis | refresh token 보관 + 로테이션/무효화 |
 | 인증 | 자체 JWT (FastAPI) | access token은 `Authorization: Bearer`, refresh token은 Redis. 사용자가 NestJS에서 해본 패턴 |
 | LLM 에이전트 | LangGraph + OpenAI | 도구 호출 기반 에이전트, 답변 스트리밍 |
+| 대화 기억 | LangGraph **Postgres 체크포인터** (`langgraph-checkpoint-postgres`) | thread_id별 그래프 상태(메시지 히스토리) 영구 저장. 단계 3부터. Redis 체크포인터도 가능하지만 휘발성이라 대화 히스토리엔 Postgres가 적합 |
 | 외부 데이터 | 한국투자증권 OpenAPI(모의투자) | 기존 `backend/app/kis_client.py` 확장 |
 | 마이그레이션 | alembic 또는 번호 붙인 `.sql` 파일 (단계 1에서 확정) | ORM 안 쓰므로 모델 기반 자동생성은 안 함 — `text()` SQL과 수기 마이그레이션 |
 
@@ -73,16 +77,16 @@
   - `get_daily_chart(code, period)` — KIS 일봉 (최근 추세)
   - 그래프 흐름: LLM이 질문 읽고 → 필요한 도구 판단 → 호출(여러 번 가능) → 받은 데이터로 한국어 답변 작성
 - 답변 스트리밍: FastAPI `StreamingResponse`/SSE로 토큰 + "도구 호출 중" 이벤트를 프론트로.
-- 보호된 엔드포인트(`POST /api/chat`, 인증 필요). 대화는 단계 2에선 아직 저장 안 함(stateless) 또는 메모리만.
-- 프론트: 종목 페이지 + 챗 패널, 토큰 스트리밍 렌더, **에이전트 단계 표시 UI**, 로딩/에러.
+- 보호된 엔드포인트(`POST /api/chat`, 인증 필요). 대화는 단계 2에선 아직 영구 저장 안 함 — 인메모리 체크포인터(`MemorySaver`)로 한 요청 흐름 내 멀티턴만. 영구 저장은 단계 3에서 Postgres 체크포인터로 교체.
+- 프론트: **전역 플로팅 챗 위젯** — 루트 레이아웃에 우측 하단 `position: fixed` 버튼, 클릭하면 챗 패널 슬라이드. 현재 라우트를 보고 종목 페이지면 그 종목 코드를 컨텍스트로 챗 API에 같이 보냄(`/api/chat` 요청 body에 `context: { stock_code }`). 토큰 스트리밍 렌더, **에이전트 단계 표시 UI**("삼성전자 시세 조회 중…"), 로딩/에러.
 - **단계 2 끝나면 배포** — 프론트 Vercel, 백엔드 Fly.io 또는 Render, Postgres·Redis는 매니지드(예: Render Postgres + Upstash Redis). 이력서에 라이브 링크.
 - 테스트: LangGraph 도구들(KIS 모킹), 챗 엔드포인트 인증·스트리밍 동작.
 
-### 단계 3 — 대화 저장 + 모의 매매
-- `conversations` / `messages` 테이블 — 사용자별 챗 히스토리 저장·조회.
+### 단계 3 — 대화 기억(영구) + 모의 매매
+- **대화 기억 (= "메모리" 의 (a) 대화 내 기억):** LangGraph 체크포인터를 인메모리에서 **Postgres 체크포인터**로 교체. `thread_id`는 `user:{user_id}:conv:{conv_id}` 형태로 사용자에 묶음 → 로그아웃/재로그인해도 같은 사용자면 같은 thread_id 재구성 → 히스토리 그대로 로드(로그아웃은 토큰만 만료, 서버 데이터 무관). 추가로 가벼운 `conversations` 테이블(id, user_id, title, created_at)을 둬서 UI에서 대화 목록 보여줌(실제 메시지 상태는 체크포인터가 보관). 장기/대화 간 메모리(mem0 등 (b))는 비목표 — 단계 4 후보.
 - KIS 모의투자 주문: `kis_client`에 `place_order`(매수/매도, tr_id VTTC0802U/VTTC0801U), `get_balance`(VTTC8434R) 추가. `.env`의 `KIS_ACCOUNT` 사용.
 - 에이전트에 `place_order` / `get_balance` 도구 추가 → "삼성전자 10주 사줘" → 에이전트가 **확인 받고** 모의 주문. 위험한 동작이므로 명시적 confirm 단계.
-- 프론트: 챗 히스토리 목록, 주문 확인 UI, 잔고 패널.
+- 프론트: 챗 히스토리 목록(과거 대화 다시 열기), 주문 확인 UI, 잔고 패널.
 
 ### 단계 4 — 뉴스 검색 / 분석 고도화
 - 뉴스 검색 도구 추가 — Tavily 또는 네이버 검색 API. 에이전트가 최근 뉴스 가져와 답변에 인용/요약.
@@ -94,6 +98,9 @@
 - **DB: SQLAlchemy Core vs asyncpg 직접** → SQLAlchemy Core async (사용자가 이미 `create_async_engine` 패턴 사용 경험). 연결 풀·트랜잭션 공짜, 쿼리는 `text()` 생SQL.
 - **인증: 자체 FastAPI JWT vs NextAuth(Auth.js)** → 자체 JWT + Redis refresh token (사용자가 NestJS에서 해본 패턴, 백엔드 역량 더 보여줌). 주의: 직접 만드는 인증은 실수 나기 쉬운 영역 — refresh 로테이션·만료·해싱 꼼꼼히, 테스트로 커버.
 - **LLM: OpenAI 고정 vs 추상화** → OpenAI 고정 (YAGNI).
+- **챗 UI: 종목 페이지 전용 패널 vs 전역 플로팅 위젯** → 전역 플로팅 위젯 (모든 페이지 우측 하단 fixed 버튼, 인터콤 형태). 현재 페이지를 컨텍스트로 챗 API에 주입.
+- **대화 기억 백엔드: Redis 체크포인터 vs Postgres 체크포인터** → Postgres (영구 보존돼야 하는 데이터. Redis는 휘발성이라 — RDB/AOF로 영속 가능하지만 본령이 아님 — refresh token 전용). LangGraph 체크포인터는 thread_id 키잉이라 로그아웃과 무관하게 사용자별 히스토리 유지.
+- **메모리 범위: (a) 대화 내 기억만 vs + (b) mem0 장기 기억** → (a)만 (단계 3, LangGraph 체크포인터로). (b) mem0/langmem/LangGraph Store는 비목표 — 단계 4 후보.
 
 ## 아키텍처 메모
 
@@ -103,13 +110,14 @@
 - DB 접근은 `app/db/` (엔진, 쿼리 모음, 마이그레이션). SQL은 한 곳에 모아 둠.
 - 설정은 기존 `app/config.py`에 `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `JWT_SECRET`, `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL` 추가.
 
-## 열린 질문 (단계 1 구현 계획에서 확정)
+## 열린 질문 (해당 단계 구현 계획에서 확정)
 
-- 마이그레이션 도구: alembic vs 번호 붙인 `.sql` + 작은 러너. (alembic은 SQLAlchemy 생태계라 자연스럽지만 ORM 모델 없이 쓰면 약간 어색 — `--autogenerate` 없이 수기 작성)
-- 로그인: 이메일/비밀번호만 vs OAuth(구글) 추가. (단계 1은 이메일/비밀번호로 시작 권장)
-- 프론트 토큰 저장: httpOnly 쿠키 vs 메모리(access) + refresh 호출. (XSS/CSRF 트레이드오프 — 단계 1에서 정함)
-- 배포 대상 구체화: 백엔드 Fly.io vs Render, Redis는 Upstash vs 매니지드, Postgres 호스트.
-- LangGraph 도구 그래프의 정확한 노드/분기 구조 (단계 2 구현 계획에서 상세화).
+- 마이그레이션 도구: alembic vs 번호 붙인 `.sql` + 작은 러너. (alembic은 SQLAlchemy 생태계라 자연스럽지만 ORM 모델 없이 쓰면 약간 어색 — `--autogenerate` 없이 수기 작성) — 단계 1
+- 로그인: 이메일/비밀번호만 vs OAuth(구글) 추가. (단계 1은 이메일/비밀번호로 시작 권장) — 단계 1
+- 프론트 토큰 저장: httpOnly 쿠키 vs 메모리(access) + refresh 호출. (XSS/CSRF 트레이드오프) — 단계 1
+- 배포 대상 구체화: 백엔드 Fly.io vs Render, Redis는 Upstash vs 매니지드, Postgres 호스트. — 단계 2 배포 시점
+- LangGraph 도구 그래프의 정확한 노드/분기 구조, 스트리밍 이벤트 포맷. — 단계 2
+- 챗 위젯이 컨텍스트를 어떻게 전달할지 구체화(요청 body vs URL), 종목 외 페이지에서의 기본 동작. — 단계 2
 
 ## 다음 단계
 
