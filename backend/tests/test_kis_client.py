@@ -37,3 +37,56 @@ async def test_get_access_token_raises_when_creds_missing(monkeypatch):
     monkeypatch.setattr(settings, "kis_app_key", "")
     with pytest.raises(kis_client.KisError):
         await kis_client.get_access_token()
+
+
+PRICE_URL = f"{BASE}/uapi/domestic-stock/v1/quoting/inquire-price"
+
+
+def _mock_token():
+    respx.post(TOKEN_URL).mock(
+        return_value=httpx.Response(
+            200, json={"access_token": "abc123", "token_type": "Bearer", "expires_in": 86400}
+        )
+    )
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_get_price_parses_output():
+    _mock_token()
+    respx.get(PRICE_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "rt_cd": "0",
+                "msg1": "정상처리 되었습니다.",
+                "output": {
+                    "hts_kor_isnm": "삼성전자",
+                    "stck_prpr": "70000",
+                    "prdy_vrss": "1000",
+                    "prdy_ctrt": "1.45",
+                    "acml_vol": "12345678",
+                },
+            },
+        )
+    )
+    result = await kis_client.get_price("005930")
+    assert result == {
+        "code": "005930",
+        "name": "삼성전자",
+        "price": 70000,
+        "change": 1000,
+        "change_rate": 1.45,
+        "volume": 12345678,
+    }
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_get_price_raises_on_error_rt_cd():
+    _mock_token()
+    respx.get(PRICE_URL).mock(
+        return_value=httpx.Response(200, json={"rt_cd": "1", "msg1": "조회할 자료가 없습니다."})
+    )
+    with pytest.raises(kis_client.KisError):
+        await kis_client.get_price("000000")
