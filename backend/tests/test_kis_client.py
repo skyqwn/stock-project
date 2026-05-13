@@ -90,3 +90,64 @@ async def test_get_price_raises_on_error_rt_cd():
     )
     with pytest.raises(kis_client.KisError):
         await kis_client.get_price("000000")
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_get_access_token_defaults_expiry_when_missing():
+    route = respx.post(TOKEN_URL).mock(
+        return_value=httpx.Response(200, json={"access_token": "tok"})
+    )
+    token1 = await kis_client.get_access_token()
+    token2 = await kis_client.get_access_token()
+    assert token1 == "tok"
+    assert token2 == "tok"
+    assert route.call_count == 1  # 누락된 expires_in 도 ~24h 로 캐시 → 재요청 없음
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_get_price_raises_kis_error_on_bad_number():
+    _mock_token()
+    respx.get(PRICE_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "rt_cd": "0",
+                "msg1": "OK",
+                "output": {
+                    "hts_kor_isnm": "X",
+                    "stck_prpr": "not-a-number",
+                    "prdy_vrss": "0",
+                    "prdy_ctrt": "0",
+                    "acml_vol": "0",
+                },
+            },
+        )
+    )
+    with pytest.raises(kis_client.KisError):
+        await kis_client.get_price("000000")
+
+
+@respx.mock
+@pytest.mark.anyio
+async def test_get_price_parses_decimal_price():
+    _mock_token()
+    respx.get(PRICE_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "rt_cd": "0",
+                "msg1": "정상처리 되었습니다.",
+                "output": {
+                    "hts_kor_isnm": "삼성전자",
+                    "stck_prpr": "70000.0",
+                    "prdy_vrss": "1000",
+                    "prdy_ctrt": "1.45",
+                    "acml_vol": "12345678",
+                },
+            },
+        )
+    )
+    result = await kis_client.get_price("005930")
+    assert result["price"] == 70000
